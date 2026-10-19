@@ -4,16 +4,25 @@ A small paid HTTP endpoint ([x402](https://github.com/x402-foundation/x402), USD
 
 It wraps the open-source [titanhold-quality-gate](https://github.com/wolkodaww123-ctrl/titanhold-quality-gate) (MIT) and runs a **local** vision model (Ollama, default `qwen2.5vl:7b`). Files are not sent to a third-party AI API and are deleted right after the check.
 
-> **Status: prototype.** The x402 payment flow is tested end to end against a local mock facilitator and the 402 challenge against the public Base Sepolia facilitator. It has **not** processed a real paid call yet. Vision models miss defects and sometimes flag clean images: treat `pass: false` as "needs a human look", not a final verdict.
+> **Status: early production.** Live on Base mainnet at `https://x402.titanhold.app` (first real paid call settled 2026-10-19). The x402 flow is also tested end to end against a local mock facilitator. Vision models miss defects and sometimes flag clean images: treat `pass: false` as "needs a human look", not a final verdict.
 
 | Route | Default price | Input (JSON) |
 |---|---|---|
 | `POST /v1/check/image` | $0.02 | `url` (https) or `data` (base64), optional `brief`, `minScore` |
 | `POST /v1/check/video` | $0.10 | same + optional `frames` (2-8) |
 | `GET /`, `GET /health` | free | service info / model status |
+| `GET /openapi.json` | free | OpenAPI 3.1 discovery doc (x402scan / agentcash format) |
 
 Output: `{ pass, score, defects: [{type, severity, detail, frame?}], reasons, model }`.
 You are charged only when a verdict is returned (HTTP 200). Input errors (4xx), "busy" (503) and model errors (502) are not settled.
+
+## Discovery
+
+`GET /openapi.json` follows the [x402scan discovery spec](https://www.x402scan.com/discovery/spec): `info.x-guidance`, `info.contact.email` (`CONTACT_EMAIL` env), and for each paid route a JSON `requestBody` schema, a `200` schema, `402: Payment Required` and `x-payment-info` (fixed USD price, `x402` protocol). Prices come from `PRICE_IMAGE` / `PRICE_VIDEO`, so the doc always matches the runtime 402. Unpaid requests get the 402 challenge before any body validation (even malformed JSON). Check with:
+
+```bash
+npx -y @agentcash/discovery@latest discover "https://x402.titanhold.app"
+```
 
 ## Run (testnet first)
 

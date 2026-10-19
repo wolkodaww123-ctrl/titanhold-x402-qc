@@ -4,7 +4,8 @@
 import express from "express";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
@@ -34,6 +35,8 @@ const BUILDER_CODE = env.BUILDER_CODE; // optional Base Builder Code (dashboard.
 const MAX_BYTES = Number(env.MAX_BYTES ?? 40 * 1024 * 1024);
 const MAX_QUEUE = Number(env.MAX_QUEUE ?? 4);
 const PUBLIC_URL = env.PUBLIC_URL ?? `http://${HOST}:${PORT}`;
+const CONTACT_EMAIL = env.CONTACT_EMAIL ?? "hennadii@titanhold.app";
+const usd = (p) => String(p).replace(/^\$/, ""); // "$0.02" -> "0.02" (OpenAPI x-payment-info amount is decimal USD)
 if (!PAY_TO || !/^0x[0-9a-fA-F]{40}$/.test(PAY_TO)) { console.error("Set PAY_TO to the 0x... address that should receive USDC (public address only)."); process.exit(1); }
 
 const IMG_EXT = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
@@ -143,7 +146,14 @@ async function runCheck(req, res, kind) {
 const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", "loopback");
-app.use(express.json({ limit: Math.ceil(MAX_BYTES * 1.4) }));
+// Body parse errors (bad JSON, wrong type) must not block the 402 challenge: unpaid probes always get 402 first.
+// After payment, runCheck rejects a missing/invalid body with 4xx, which is not settled.
+const jsonParser = express.json({ limit: Math.ceil(MAX_BYTES * 1.4) });
+app.use((req, res, next) => jsonParser(req, res, (err) => {
+  if (err && err.type === "entity.too.large") return res.status(413).json({ error: `body larger than allowed (${MAX_BYTES} byte file cap)` });
+  if (err) req.body = undefined;
+  next();
+}));
 
 const inputSchema = {
   url: "https URL of the delivered file (or use data)",
@@ -191,6 +201,90 @@ const routes = {
   },
 };
 
+// ---------- OpenAPI discovery doc (x402scan: https://www.x402scan.com/discovery/spec) ----------
+const checkBodySchema = (video) => ({
+  type: "object",
+  description: "Send exactly one of url or data.",
+  properties: {
+    url: { type: "string", format: "uri", pattern: "^https://", description: "https URL of the delivered file. Alternative: data (base64)." },
+    data: { type: "string", contentEncoding: "base64", description: "Base64 file bytes. Alternative to url." },
+    brief: { type: "string", maxLength: 500, description: "Optional: what was ordered, used to judge the file against the brief." },
+    minScore: { type: "number", minimum: 0, maximum: 100, default: 70, description: "Optional: fail below this 0-100 score." },
+    ...(video ? { frames: { type: "integer", minimum: 2, maximum: 8, default: 6, description: "Optional: video frames to sample." } } : {}),
+  },
+  oneOf: [{ required: ["url"] }, { required: ["data"] }],
+  example: video
+    ? { url: "https://example.com/clip.mp4", brief: "car driving through a city at night", frames: 6 }
+    : { url: "https://example.com/render.png", brief: "red 2-door coupe at night", minScore: 70 },
+});
+const verdictSchema = {
+  type: "object",
+  properties: {
+    pass: { type: "boolean", description: "true when score >= minScore and no major defect" },
+    score: { type: "number", minimum: 0, maximum: 100 },
+    kind: { type: "string", enum: ["image", "video"] },
+    framesChecked: { type: "integer" },
+    defects: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          type: { type: "string" }, severity: { type: "string" }, detail: { type: "string" }, frame: { type: "integer" },
+        },
+        required: ["type", "severity", "detail"],
+      },
+    },
+    reasons: { type: "array", items: { type: "string" } },
+    model: { type: "string" },
+    note: { type: "string" },
+  },
+  required: ["pass", "score", "defects", "reasons"],
+  example: verdictExample,
+};
+const errorSchema = { type: "object", properties: { error: { type: "string" } }, required: ["error"] };
+const paidOp = (kind, price, summary, description) => ({
+  operationId: `check${kind[0].toUpperCase()}${kind.slice(1)}`,
+  summary,
+  description,
+  tags: ["Quality check"],
+  "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: usd(price) }, protocols: [{ x402: {} }] },
+  requestBody: { required: true, content: { "application/json": { schema: checkBodySchema(kind === "video") } } },
+  responses: {
+    200: { description: "Verdict (payment settled)", content: { "application/json": { schema: verdictSchema } } },
+    400: { description: "Invalid input (not charged)", content: { "application/json": { schema: errorSchema } } },
+    402: { description: "Payment Required" },
+    415: { description: "Unsupported file format (not charged)", content: { "application/json": { schema: errorSchema } } },
+    503: { description: "Busy, retry later (not charged)", content: { "application/json": { schema: errorSchema } } },
+  },
+});
+const openapi = {
+  openapi: "3.1.0",
+  info: {
+    title: "TITANHOLD AI Quality Check",
+    version: "0.2.0",
+    description: "Paid check of an AI-generated image or short video for typical generation defects (extra fingers, garbled text, wrong vehicle geometry, physics, flicker). Runs a local vision model; files are deleted after the check.",
+    "x-guidance": [
+      `POST ${PUBLIC_URL}/v1/check/image with a JSON body: {"url": "https://.../file.png"} or {"data": "<base64 PNG/JPEG/WebP>"}, optionally "brief" (what was ordered) and "minScore" (0-100, default 70).`,
+      `The first call returns HTTP 402 with an x402 payment challenge: pay ${PRICE_IMAGE} in USDC on Base via x402 and repeat the request with the payment header.`,
+      `The paid call returns JSON {pass, score, defects:[{type, severity, detail}], reasons}. Treat pass=false as "needs a human look".`,
+      `For short videos (MP4/MOV/WebM) use POST /v1/check/video (${PRICE_VIDEO}), same body plus optional "frames" (2-8).`,
+      "You are charged only when a verdict is returned (HTTP 200); input errors, busy (503) and model errors are not settled.",
+    ].join(" "),
+    contact: { name: "TITANHOLD LLC", email: CONTACT_EMAIL, url: "https://titanhold.app" },
+    license: { name: "MIT", url: "https://opensource.org/licenses/MIT" },
+  },
+  servers: [{ url: PUBLIC_URL }],
+  paths: {
+    "/v1/check/image": { post: paidOp("image", PRICE_IMAGE, "Check an AI-generated image before you pay",
+      "Defect check of a PNG/JPEG/WebP image. Returns pass, score and typed defects.") },
+    "/v1/check/video": { post: paidOp("video", PRICE_VIDEO, "Check a short AI-generated video before you pay",
+      "Defect check of a short MP4/MOV/WebM video (sampled frames plus frame-to-frame flicker). Returns pass, score and typed defects.") },
+  },
+};
+const FAVICON = join(dirname(fileURLToPath(import.meta.url)), "public", "favicon.ico");
+app.get("/favicon.ico", (_req, res) => res.type("image/x-icon").sendFile(FAVICON, { maxAge: "7d" }));
+app.get("/openapi.json", (_req, res) => { res.set("access-control-allow-origin", "*"); res.json(openapi); });
+
 app.get("/", (_req, res) => res.json({
   service: "TITANHOLD QC: check an AI deliverable before you pay",
   source: "https://github.com/wolkodaww123-ctrl/titanhold-quality-gate",
@@ -200,6 +294,7 @@ app.get("/", (_req, res) => res.json({
     [`POST ${PUBLIC_URL}/v1/check/video`]: { price: PRICE_VIDEO, input: { ...inputSchema, frames: "optional 2-8, default 6" } },
   },
   output: { pass: "boolean", score: "0-100", defects: "[{type, severity, detail, frame?}]", reasons: "string[]" },
+  openapi: `${PUBLIC_URL}/openapi.json`,
   charging: "You are charged only when a verdict is returned (HTTP 200). Errors and 'busy' are free.",
 }));
 
