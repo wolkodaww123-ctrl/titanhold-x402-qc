@@ -24,9 +24,9 @@ ollama pull qwen2.5vl:7b # needs ffmpeg/ffprobe on PATH for video
 node --env-file=.env server.mjs
 ```
 
-Defaults to **Base Sepolia** (`eip155:84532`) and the public facilitator `https://x402.org/facilitator`. For Base mainnet set `X402_NETWORK=eip155:8453`; the mainnet default facilitator is the Coinbase CDP facilitator (`FACILITATOR_URL=cdp`, needs `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`, Node >= 22 and `npm i @coinbase/cdp-sdk @x402/svm`). That path is the one that feeds the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/seller/get-discovered); it is not exercised by the included tests.
+Defaults to **Base Sepolia** (`eip155:84532`) and the public facilitator `https://x402.org/facilitator`. For Base mainnet set `X402_NETWORK=eip155:8453`; the mainnet default facilitator is [PayAI](https://docs.payai.network/x402/facilitators/introduction) (`https://facilitator.payai.network`): no account or API key, the facilitator pays gas, and services that declare the bazaar extension are listed in its catalog (`/discovery/resources`). Any other x402 facilitator URL works via `FACILITATOR_URL` (keyless fallback: `https://facilitator.openx402.ai`). Mainnet settlement is not exercised by the included tests.
 
-Optional: `BUILDER_CODE` adds a [Base Builder Code](https://docs.cdp.coinbase.com/x402/core-concepts/builder-codes) to settlements.
+Optional: `BUILDER_CODE` adds a [Base Builder Code](https://docs.cdp.coinbase.com/x402/core-concepts/builder-codes) to settlements (only applied by facilitators that advertise the `builder-code` extension).
 
 ## Test
 

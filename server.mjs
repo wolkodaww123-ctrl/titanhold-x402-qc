@@ -21,9 +21,13 @@ const NETWORK = env.X402_NETWORK ?? "eip155:84532"; // Base Sepolia (testnet) by
 const IS_MAINNET = NETWORK === "eip155:8453";
 // Receiving address (public address only, never a private key). Required: there is no default.
 const PAY_TO = env.PAY_TO;
-// Facilitator: "cdp" (Coinbase CDP, needs CDP_API_KEY_ID/SECRET + Node >= 22 + `npm i @coinbase/cdp-sdk @x402/svm`;
-// this is the one that feeds the x402 Bazaar), or any facilitator URL. Testnet default: https://x402.org/facilitator.
-const FACILITATOR = env.FACILITATOR_URL ?? (IS_MAINNET ? "cdp" : "https://x402.org/facilitator");
+// Facilitator URL. No account or API key needed for either default:
+// - mainnet: PayAI (https://facilitator.payai.network), keyless exact/USDC on Base, gas paid by the facilitator,
+//   free allowance per receiving wallet, own Bazaar catalog at /discovery/resources.
+//   Keyless fallback: https://facilitator.openx402.ai
+// - testnet: https://x402.org/facilitator (Base Sepolia only).
+const FACILITATOR = env.FACILITATOR_URL ?? (IS_MAINNET ? "https://facilitator.payai.network" : "https://x402.org/facilitator");
+if (!/^https?:\/\//.test(FACILITATOR)) { console.error("FACILITATOR_URL must be an http(s) URL of an x402 facilitator."); process.exit(1); }
 const PRICE_IMAGE = env.PRICE_IMAGE ?? "$0.02";
 const PRICE_VIDEO = env.PRICE_VIDEO ?? "$0.10";
 const BUILDER_CODE = env.BUILDER_CODE; // optional Base Builder Code (dashboard.base.org), lowercase letters/digits/_
@@ -148,7 +152,8 @@ const inputSchema = {
   minScore: "optional 0-100, default 70",
 };
 
-// Discovery metadata for the x402 Bazaar (indexed by the CDP facilitator after the first settled paid call).
+// Discovery metadata (bazaar extension): catalogued by the facilitator after the first settled paid call
+// (PayAI: GET https://facilitator.payai.network/discovery/resources) and read by x402scan when the URL is registered.
 // Text is descriptive only: it must not read as an instruction to an agent.
 const verdictExample = {
   pass: false, score: 55, kind: "image", framesChecked: 1,
@@ -205,15 +210,7 @@ app.get("/health", async (_req, res) => {
   res.status(ok ? 200 : 503).json({ ok, queue: waiters.length, running });
 });
 
-async function makeFacilitator() {
-  if (FACILITATOR !== "cdp") return new HTTPFacilitatorClient({ url: FACILITATOR });
-  let mod;
-  try { mod = await import("@coinbase/cdp-sdk/x402"); }
-  catch { throw new Error("FACILITATOR=cdp needs Node >= 22 and: npm i @coinbase/cdp-sdk @x402/svm (plus CDP_API_KEY_ID / CDP_API_KEY_SECRET)"); }
-  return mod.createCdpFacilitatorClient();
-}
-
-const resourceServer = new x402ResourceServer(await makeFacilitator())
+const resourceServer = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR }))
   .register(NETWORK, new ExactEvmScheme())
   .registerExtension(bazaarResourceServerExtension);
 if (BUILDER_CODE) resourceServer.registerExtension(builderCodeResourceServerExtension);
