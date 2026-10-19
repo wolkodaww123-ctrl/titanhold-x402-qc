@@ -1,0 +1,25 @@
+{
+  "name": "titanhold-x402-qc",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Paid x402 endpoint: check an AI-generated image/video before you pay (USDC, Base Sepolia by default). Wraps titanhold-quality-gate.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@x402/core": "^2.28.0",
+    "@x402/evm": "^2.28.0",
+    "@x402/express": "^2.28.0",
+    "@x402/extensions": "^2.28.0",
+    "express": "^4.22.3",
+    "titanhold-quality-gate": "file:vendor/titanhold-quality-gate-0.1.0.tgz"
+  },
+  "devDependencies": {
+    "@x402/fetch": "^2.28.0",
+    "viem": "^2.57.4"
+  },
+  "repository": "github:wolkodaww123-ctrl/titanhold-x402-qc"
+}
