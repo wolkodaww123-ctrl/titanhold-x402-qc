@@ -89,3 +89,31 @@ test("SSRF: private URL is refused", async () => {
   const r = await post(pay, "/v1/check/image", { url: "https://127.0.0.1/x.png" });
   assert.ok(r.status >= 400 && r.status < 500);
 });
+
+test("GET /openapi.json is free and describes every paid route for x402scan", async () => {
+  const r = await fetch(`${base}/openapi.json`);
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.match(d.openapi, /^3\./);
+  assert.equal(d.info.title, "TITANHOLD AI Quality Check");
+  assert.ok(d.info.version && d.info["x-guidance"]);
+  assert.equal(d.info.contact.email, "hennadii@titanhold.app");
+  const want = { "/v1/check/image": "0.02", "/v1/check/video": "0.10" };
+  assert.deepEqual(Object.keys(d.paths).sort(), Object.keys(want).sort());
+  for (const [path, amount] of Object.entries(want)) {
+    const op = d.paths[path].post;
+    assert.deepEqual(op["x-payment-info"], { price: { mode: "fixed", currency: "USD", amount }, protocols: [{ x402: {} }] });
+    assert.equal(op.responses["402"].description, "Payment Required");
+    assert.ok(op.requestBody.content["application/json"].schema.properties.url);
+    assert.ok(op.responses["200"].content["application/json"].schema.properties.pass);
+  }
+});
+
+test("unpaid probes get 402 before body validation (empty, malformed, wrong body)", async () => {
+  for (const path of ["/v1/check/image", "/v1/check/video"]) {
+    for (const body of [undefined, "{not json", JSON.stringify({ nope: 1 })]) {
+      const r = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body });
+      assert.equal(r.status, 402, `${path} body=${body}`);
+    }
+  }
+});
